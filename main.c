@@ -2,7 +2,9 @@
 
 // _FACTOR = (F_CPU / 8000000)
 
-// CTC1 = 1 PWM11=0 PWM10=1 Resolution=8bit TimerTOP=ICR1 Freq=31250 ICR1=(255 * _FACTOR)
+// CTC1 = 1 PWM11=0 PWM10=1 Resolution=8bit TimerTOP=ICR1 Freq=31250
+// 	8MHz ICR1=255
+// 	16MHz ICR1=511
 // CTC1 = WGM12
 // PWM11 = WGM11
 // PWM10 = WGM10
@@ -40,10 +42,15 @@
 #error "Support only ATmega48(a,p,pa,pb), ATmega88(a,p,pa,pb), ATmega168(a,p,pa,pb) and ATmega328p(b)"
 #endif
 
-#define NEED_FACTOR (F_CPU / 8000000) // factor for F_CPU speed, 1 or 2
-
-#define MIN_PWM 0x0F<<1 // ~0.5v
-#define MAX_PWM 0xF0 // ~4.5v
+#if (F_CPU == 8000000)
+#define PWM_MIN 0x0F // ~0.5v
+#define PWM_CENTER 0x7F // ~2.5v
+#define PWM_MAX 0xF0 // ~4.5v
+#elif (F_CPU == 16000000)
+#define PWM_MIN (0x0F<<1) // ~0.5v
+#define PWM_CENTER (0x7F<<1) // ~2.5v
+#define PWM_MAX (0xF0<<1) // ~4.5v
+#endif
 
 #define EEPROM_OSCCAL ((uint32_t*)0) // on some AVR first 4 byte in EEPROM contain OSCCAL value
 #define EEPROM_MIN_ADC ((uint8_t*)4) // from 4 byte + 2 byte contain MIN ADC value
@@ -58,28 +65,30 @@
 
 uint8_t calStep; // calibration step
 
+// adc input after calibrating
+// /not used/adcMin...adcCenterMin/not used/adcCenterMax...adcMax/not used/
 uint16_t adcCenterMin; // 0x0001-0x01FD
 uint16_t adcCenterMax; // 0x0002-0x01FE
 uint16_t adcMin; // 0x0000-(adcCenterMin-1)
 uint16_t adcMax; // (adcCenterMax+1)-0x01FF
 
-volatile uint16_t adcPrev;
-volatile uint16_t adcCur;
-volatile uint32_t adcArr;
-volatile uint8_t adcIndex;
-volatile uint16_t adcArrMin;
-volatile uint16_t adcArrMax;
+volatile uint16_t adcPrev; // previous avg ADC value
+volatile uint16_t adcCur; // current avg ADC value
+volatile uint32_t adcArr; // last 10 ADC measurents
+volatile uint8_t adcIndex; // ADC measure index
+volatile uint16_t adcArrMin; // minimum ADC value in last 10 measurements
+volatile uint16_t adcArrMax; // maximum ADC value in last 10 measurements
 
 volatile uint16_t cnt31250; // counter for 1 second (31250 ticks per second on PWM)
-volatile uint32_t seconds;
+volatile uint32_t seconds; // for blink leds and some other in future
 
-uint16_t pwmVal;
+// pwm output
+// /not used/PWM_MIN...PWM_CENTER...PWM_MAX/not used/
+uint16_t pwmVal; // need PWM value to set
+float pwmCenterToMaxPerStep = 0;
+float pwmCenterToMinPerStep = 0;
 
-void readEEPROM(void) {
-	adcMin = eeprom_read_byte(EEPROM_MIN_ADC);
-	adcCenterMin = eeprom_read_byte(EEPROM_CENTER_MIN_ADC);
-	adcCenterMax = eeprom_read_byte(EEPROM_CENTER_MAX_ADC);
-	adcMax = eeprom_read_byte(EEPROM_MAX_ADC);
+void reCheckAdcValues(void) {
 	if((adcCenterMin > 0x01FD) || (0x0001 > adcCenterMin)) {
 		adcCenterMin = 0xFF;
 	}
@@ -96,13 +105,21 @@ void readEEPROM(void) {
 
 	if(adcCenterMax > adcMax) {
 		adcMax = adcCenterMax + 1;
-	}
+	}	
+}
+
+void readEEPROM(void) {
+	adcMin = eeprom_read_byte(EEPROM_MIN_ADC);
+	adcCenterMin = eeprom_read_byte(EEPROM_CENTER_MIN_ADC);
+	adcCenterMax = eeprom_read_byte(EEPROM_CENTER_MAX_ADC);
+	adcMax = eeprom_read_byte(EEPROM_MAX_ADC);
+	reCheckAdcValues();
 }
 
 void initADC(void) {
 	adcIndex = 0;
 	adcCur = ((adcCenterMax + adcCenterMin) >> 1); // center
-	adcPrev = adcCur;
+	adcPrev = 0;
 	adcArr = 0;
 	adcArrMin = 0x01FF;
 	adcArrMax = 0x0000;
@@ -162,12 +179,11 @@ void initPWM(void) {
 	// set PWM value to center
 #if (F_CPU == 8000000)
 	ICR1 = 0x00FF; // 255
-	pwmVal = 0x007F; // 127
 #elif (F_CPU == 16000000)
 	ICR1 = 0x01FF; // 511
-	pwmVal = 0x00FF; // 255
 #endif
 
+	pwmVal = PWM_CENTER;
 	OCR1A = pwmVal;
 
 	TIMSK1 |= (1 << TOIE1); // enable overflow interrupt
@@ -207,6 +223,8 @@ ISR(TIMER1_OVF_vect) {
 	}
 }
 
+uint16_t calMinAdc;
+uint16_t calMaxAdc;
 
 void initCal(void) {
 	calStep = 0;
@@ -234,6 +252,10 @@ uint8_t checkCalIsDown(void) {
 	return 0;
 }
 
+void calcPwmPerSteps(void) {
+	pwmCenterToMaxPerStep = (float)(PWM_MAX - PWM_CENTER) / (float)(adcMax - adcCenterMax);
+	pwmCenterToMinPerStep = (float)(PWM_CENTER - PWM_MIN) / (float)(adcCenterMin - adcMin);
+}
 
 void setup(void) {
 	cli();
@@ -255,16 +277,73 @@ void setup(void) {
 		calStep = 1; // enter to calibrating
 	}
 
+	calcPwmPerSteps();
+
 	sei();
 
 	ADCSRA |= (1<<ADSC)|(1<<ADIF); // Reset interrupt flag and start new conversion
 }
 
+
+void doCalibrate(void) {
+	static uint16_t calAdcMin = 0x01FF;
+	static uint16_t calAdcMax = 0x0000;
+
+	// calStep = 1
+	if(adcPrev != adcCur) {
+		if(calAdcMin > adcCur) {
+			calAdcMin = adcCur;
+		}
+		if(adcCur > calAdcMax) {
+			calAdcMax = adcCur;
+		}
+	}
+
+	if(checkCalIsDown()) {
+		if(1 == calStep) {
+			adcCenterMin = calAdcMin;
+			adcCenterMax = calAdcMax;
+			reCheckAdcValues();
+			calAdcMin = 0x01FF;
+			calAdcMax = 0x0000;
+		} else if (2 == calStep) {
+			adcMin = calAdcMin;
+			adcMax = calAdcMax;
+			reCheckAdcValues();
+		} else {
+			calcPwmPerSteps();
+			calStep = 0;
+		}
+		calStep++;
+	}
+}
+
 void loop(void) {
 
 	if(0 != calStep) {
-		// ...
-		return;
+		doCalibrate();
+	} else {
+		if(adcPrev != adcCur) {
+			if(adcCur > adcCenterMax) {
+				if(adcCur > adcMax) {
+					pwmVal = PWM_MAX;
+				} else {
+					pwmVal = PWM_CENTER + (uint16_t)(pwmCenterToMaxPerStep * (float)(adcMax - adcCur));
+				}
+			} else if (adcCenterMin > adcCur) {
+				if(adcMin > adcCur) {
+					pwmVal = PWM_MIN;
+				} else {
+					pwmVal = PWM_MIN + (uint16_t)(pwmCenterToMinPerStep * (float)(adcCur - adcMin));
+				}
+			} else {
+				pwmVal = PWM_CENTER;
+			}
+		}
+	}
+
+	if(adcPrev != adcCur) {
+		adcPrev = adcCur;
 	}
 
 }

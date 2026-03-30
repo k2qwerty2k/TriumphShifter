@@ -29,6 +29,7 @@
 #include <util/delay.h>
 #include <avr/wdt.h>
 #include <avr/interrupt.h>
+#include <avr/pgmspace.h>
 
 #if USE_SERIAL
 #include "serial.h"
@@ -62,6 +63,20 @@
 #define CAL_PIN_PIN PIND
 #define CAL_PIN_PORT PORTD
 #define CAL_PIN_NUM 2
+
+#define LED_DDR DDRD
+#define LED_PORT PORTD
+#define LED_BLUE_PIN_NUM 3
+#define LED_GREEN_PIN_NUM 5
+
+#define LED_BLUE_OFF() (LED_PORT &= ~(1<<LED_BLUE_PIN_NUM))
+#define LED_BLUE_ON() (LED_PORT |= (1<<LED_BLUE_PIN_NUM))
+#define LED_BLUE_TOGGLE() (LED_PORT ^= (1<<LED_BLUE_PIN_NUM));
+
+#define LED_GREEN_OFF() (LED_PORT &= ~(1<<LED_GREEN_PIN_NUM))
+#define LED_GREEN_ON() (LED_PORT |= (1<<LED_GREEN_PIN_NUM))
+#define LED_GREEN_TOGGLE() (LED_PORT ^= (1<<LED_GREEN_PIN_NUM));
+
 
 uint8_t calStep; // calibration step
 
@@ -189,6 +204,14 @@ void initPWM(void) {
 	TIMSK1 |= (1 << TOIE1); // enable overflow interrupt
 }
 
+void initLED(void) {
+	LED_DDR |= (1<<LED_BLUE_PIN_NUM);
+	LED_PORT |= (1<<LED_BLUE_PIN_NUM);
+
+	LED_BLUE_ON();
+	LED_GREEN_ON();
+}
+
 ISR(ADC_vect) {
 	uint16_t adcVal;
 	adcVal = 0x0000 | ((ADCL & 0b11000000) >> 7); // we need only one high bit (ADLAR=1)
@@ -257,6 +280,15 @@ void calcPwmPerSteps(void) {
 	pwmCenterToMinPerStep = (float)(PWM_CENTER - PWM_MIN) / (float)(adcCenterMin - adcMin);
 }
 
+#if USE_SERIAL
+const char str_TriumphShifter[] PROGMEM = "Triumph Shifter\r\n";
+const char str_MIN[] PROGMEM = "MIN:";
+const char str_CENTER[] PROGMEM = "CENTER:";
+const char str_MAX[] PROGMEM = "MAX:";
+const char str_NL[] PROGMEM = "\r\n";
+const char str_ADC[] PROGMEM = "ADC:";
+#endif
+
 void setup(void) {
 	cli();
 
@@ -264,6 +296,8 @@ void setup(void) {
 
 	DDRB = DDRC = DDRD = 0x00;
 	PORTB = PORTC = PORTD = 0x00;
+
+	initLED();
 
 	initCal();
 
@@ -279,9 +313,37 @@ void setup(void) {
 
 	calcPwmPerSteps();
 
+#if USE_SERIAL
+	uartInit();
+#endif
+
+	LED_BLUE_OFF();
+
 	sei();
 
 	ADCSRA |= (1<<ADSC)|(1<<ADIF); // Reset interrupt flag and start new conversion
+
+#if USE_SERIAL
+	uartSend_P(str_TriumphShifter);
+
+	uartSend_P(str_MIN);
+	uartSendUint16_t(adcMin);
+	uartSend_P(str_NL);
+
+	uartSend_P(str_CENTER);
+	uartSendUint16_t(adcCenterMin);
+	uartSendChar(' ');
+	uartSendUint16_t(adcCenterMax);
+	uartSend_P(str_NL);
+
+	uartSend_P(str_MAX);
+	uartSendUint16_t(adcMax);
+	uartSend_P(str_NL);
+
+	// need time to send 59 bytes
+	_delay_ms(200);
+
+#endif
 }
 
 
@@ -313,6 +375,7 @@ void doCalibrate(void) {
 		} else {
 			calcPwmPerSteps();
 			calStep = 0;
+			LED_BLUE_OFF();
 		}
 		calStep++;
 	}
@@ -320,7 +383,12 @@ void doCalibrate(void) {
 
 void loop(void) {
 
+	static uint32_t secondsPrev = 0;
+
 	if(0 != calStep) {
+		if(secondsPrev != seconds) {
+			LED_BLUE_TOGGLE();
+		}
 		doCalibrate();
 	} else {
 		if(adcPrev != adcCur) {
@@ -344,6 +412,16 @@ void loop(void) {
 
 	if(adcPrev != adcCur) {
 		adcPrev = adcCur;
+	}
+
+	if(secondsPrev != seconds) {
+		LED_GREEN_TOGGLE();
+#if USE_SERIAL		
+		uartSend_P(str_ADC);
+		uartSendUint16_t(adcCur);
+		uartSend_P(str_NL);
+#endif
+		secondsPrev = seconds;
 	}
 
 }

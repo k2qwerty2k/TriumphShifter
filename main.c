@@ -54,10 +54,10 @@
 #endif
 
 #define EEPROM_OSCCAL ((uint32_t*)0) // on some AVR first 4 byte in EEPROM contain OSCCAL value
-#define EEPROM_MIN_ADC ((uint8_t*)4) // from 4 byte + 2 byte contain MIN ADC value
-#define EEPROM_CENTER_MIN_ADC ((uint8_t*)6) // from 6 byte + 2 byte contain CENTER ADC value
-#define EEPROM_CENTER_MAX_ADC ((uint8_t*)8) // from 8 byte + 2 byte contain CENTER ADC value
-#define EEPROM_MAX_ADC ((uint8_t*)10) // from 10 byte + 2 byte contain MAX ADC value
+#define EEPROM_MIN_ADC ((uint16_t*)4) // from 4 byte + 2 byte contain MIN ADC value
+#define EEPROM_CENTER_MIN_ADC ((uint16_t*)6) // from 6 byte + 2 byte contain CENTER ADC value
+#define EEPROM_CENTER_MAX_ADC ((uint16_t*)8) // from 8 byte + 2 byte contain CENTER ADC value
+#define EEPROM_MAX_ADC ((uint16_t*)10) // from 10 byte + 2 byte contain MAX ADC value
 
 #define CAL_PIN_DDR DDRD
 #define CAL_PIN_PIN PIND
@@ -124,11 +124,18 @@ void reCheckAdcValues(void) {
 }
 
 void readEEPROM(void) {
-	adcMin = eeprom_read_byte(EEPROM_MIN_ADC);
-	adcCenterMin = eeprom_read_byte(EEPROM_CENTER_MIN_ADC);
-	adcCenterMax = eeprom_read_byte(EEPROM_CENTER_MAX_ADC);
-	adcMax = eeprom_read_byte(EEPROM_MAX_ADC);
+	adcMin = eeprom_read_word(EEPROM_MIN_ADC);
+	adcCenterMin = eeprom_read_word(EEPROM_CENTER_MIN_ADC);
+	adcCenterMax = eeprom_read_word(EEPROM_CENTER_MAX_ADC);
+	adcMax = eeprom_read_word(EEPROM_MAX_ADC);
 	reCheckAdcValues();
+}
+
+void writeEEPROM(void) {
+	eeprom_write_word(EEPROM_MIN_ADC, adcMin);
+	eeprom_write_word(EEPROM_CENTER_MIN_ADC, adcCenterMin);
+	eeprom_write_word(EEPROM_CENTER_MAX_ADC, adcCenterMax);
+	eeprom_write_word(EEPROM_MAX_ADC, adcMax);
 }
 
 void initADC(void) {
@@ -287,6 +294,9 @@ const char str_CENTER[] PROGMEM = "CENTER:";
 const char str_MAX[] PROGMEM = "MAX:";
 const char str_NL[] PROGMEM = "\r\n";
 const char str_ADC[] PROGMEM = "ADC:";
+const char str_StartCalibrating[] PROGMEM = "Calibrating center...\r\n";
+const char str_CalibratingMinMax[] PROGMEM = "Calibrating MIN & MAX...\r\n";
+const char str_SaveToEEPROM[] PROGMEM = "Saving to EEPROM!\r\n";
 #endif
 
 void setup(void) {
@@ -332,7 +342,7 @@ void setup(void) {
 
 	uartSend_P(str_CENTER);
 	uartSendUint16_t(adcCenterMin);
-	uartSendChar(' ');
+	uartSendChar('-');
 	uartSendUint16_t(adcCenterMax);
 	uartSend_P(str_NL);
 
@@ -342,6 +352,10 @@ void setup(void) {
 
 	// need time to send 59 bytes
 	_delay_ms(200);
+
+	if(calStep) {
+		uartSend_P(str_StartCalibrating);
+	}
 
 #endif
 }
@@ -368,13 +382,34 @@ void doCalibrate(void) {
 			reCheckAdcValues();
 			calAdcMin = 0x01FF;
 			calAdcMax = 0x0000;
-		} else if (2 == calStep) {
+#if USE_SERIAL
+			uartSend_P(str_CENTER);
+			uartSendUint16_t(adcCenterMin);
+			uartSendChar('-');
+			uartSendUint16_t(adcCenterMax);
+			uartSend_P(str_NL);
+			uartSend_P(str_CalibratingMinMax);
+#endif
+		} else {
 			adcMin = calAdcMin;
 			adcMax = calAdcMax;
 			reCheckAdcValues();
-		} else {
+			writeEEPROM();
 			calcPwmPerSteps();
 			calStep = 0;
+
+#if USE_SERIAL
+	uartSend_P(str_MIN);
+	uartSendUint16_t(adcMin);
+	uartSend_P(str_NL);
+
+	uartSend_P(str_MAX);
+	uartSendUint16_t(adcMax);
+	uartSend_P(str_NL);
+
+	uartSend_P(str_SaveToEEPROM);
+#endif
+
 			LED_BLUE_OFF();
 		}
 		calStep++;

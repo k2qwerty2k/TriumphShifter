@@ -71,11 +71,11 @@
 
 #define LED_BLUE_OFF() (LED_PORT &= ~(1<<LED_BLUE_PIN_NUM))
 #define LED_BLUE_ON() (LED_PORT |= (1<<LED_BLUE_PIN_NUM))
-#define LED_BLUE_TOGGLE() (LED_PORT ^= (1<<LED_BLUE_PIN_NUM));
+#define LED_BLUE_TOGGLE() (LED_PORT ^= (1<<LED_BLUE_PIN_NUM))
 
 #define LED_GREEN_OFF() (LED_PORT &= ~(1<<LED_GREEN_PIN_NUM))
 #define LED_GREEN_ON() (LED_PORT |= (1<<LED_GREEN_PIN_NUM))
-#define LED_GREEN_TOGGLE() (LED_PORT ^= (1<<LED_GREEN_PIN_NUM));
+#define LED_GREEN_TOGGLE() (LED_PORT ^= (1<<LED_GREEN_PIN_NUM))
 
 
 uint8_t calStep; // calibration step

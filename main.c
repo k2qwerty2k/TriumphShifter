@@ -54,9 +54,9 @@
 #endif
 
 #define EEPROM_OSCCAL ((uint32_t*)0) // on some AVR first 4 byte in EEPROM contain OSCCAL value
-#define EEPROM_MIN_ADC ((uint16_t*)4) // from 4 byte + 2 byte contain MIN ADC value
-#define EEPROM_CENTER_MIN_ADC ((uint16_t*)6) // from 6 byte + 2 byte contain CENTER ADC value
-#define EEPROM_CENTER_MAX_ADC ((uint16_t*)8) // from 8 byte + 2 byte contain CENTER ADC value
+#define EEPROM_CENTER_MIN_ADC ((uint16_t*)4) // from 6 byte + 2 byte contain CENTER ADC value
+#define EEPROM_CENTER_MAX_ADC ((uint16_t*)6) // from 8 byte + 2 byte contain CENTER ADC value
+#define EEPROM_MIN_ADC ((uint16_t*)8) // from 4 byte + 2 byte contain MIN ADC value
 #define EEPROM_MAX_ADC ((uint16_t*)10) // from 10 byte + 2 byte contain MAX ADC value
 
 #define CAL_PIN_DDR DDRD
@@ -68,6 +68,7 @@
 #define LED_PORT PORTD
 #define LED_BLUE_PIN_NUM 3
 #define LED_GREEN_PIN_NUM 5
+#define LED_RED_PIN_NUM 6
 
 #define LED_BLUE_OFF() (LED_PORT &= ~(1<<LED_BLUE_PIN_NUM))
 #define LED_BLUE_ON() (LED_PORT |= (1<<LED_BLUE_PIN_NUM))
@@ -76,6 +77,10 @@
 #define LED_GREEN_OFF() (LED_PORT &= ~(1<<LED_GREEN_PIN_NUM))
 #define LED_GREEN_ON() (LED_PORT |= (1<<LED_GREEN_PIN_NUM))
 #define LED_GREEN_TOGGLE() (LED_PORT ^= (1<<LED_GREEN_PIN_NUM))
+
+#define LED_RED_OFF() (LED_PORT &= ~(1<<LED_RED_PIN_NUM))
+#define LED_RED_ON() (LED_PORT |= (1<<LED_RED_PIN_NUM))
+#define LED_RED_TOGGLE() (LED_PORT ^= (1<<LED_RED_PIN_NUM))
 
 
 uint8_t calStep; // calibration step
@@ -99,42 +104,45 @@ volatile uint32_t seconds; // for blink leds and some other in future
 
 // pwm output
 // /not used/PWM_MIN...PWM_CENTER...PWM_MAX/not used/
-uint16_t pwmVal; // need PWM value to set
+volatile uint16_t pwmVal; // need PWM value to set
 float pwmCenterToMaxPerStep = 0;
 float pwmCenterToMinPerStep = 0;
 
-void reCheckAdcValues(void) {
+void reCheckCenterAdcValues(void) {
 	if((adcCenterMin > 0x01FD) || (0x0001 > adcCenterMin)) {
 		adcCenterMin = 0xFF;
 	}
 	if((adcCenterMax > 0x01FE) || (0x0002 > adcCenterMax)) {
 		adcCenterMax = 0x0100;
 	}
-	if(adcCenterMin>adcCenterMax) {
+	if(adcCenterMin > adcCenterMax) {
 		adcCenterMin = adcCenterMax - 1;
 	}
+}
 
+void reCheckAdcValues(void) {
 	if(adcMin > adcCenterMin) {
 		adcMin = adcCenterMin - 1;
 	}
 
-	if(adcCenterMax > adcMax) {
+	if((adcCenterMax > adcMax) || (adcMax > 0x01FF)) {
 		adcMax = adcCenterMax + 1;
 	}	
 }
 
 void readEEPROM(void) {
-	adcMin = eeprom_read_word(EEPROM_MIN_ADC);
 	adcCenterMin = eeprom_read_word(EEPROM_CENTER_MIN_ADC);
 	adcCenterMax = eeprom_read_word(EEPROM_CENTER_MAX_ADC);
+	reCheckCenterAdcValues();
+	adcMin = eeprom_read_word(EEPROM_MIN_ADC);
 	adcMax = eeprom_read_word(EEPROM_MAX_ADC);
 	reCheckAdcValues();
 }
 
 void writeEEPROM(void) {
-	eeprom_write_word(EEPROM_MIN_ADC, adcMin);
 	eeprom_write_word(EEPROM_CENTER_MIN_ADC, adcCenterMin);
 	eeprom_write_word(EEPROM_CENTER_MAX_ADC, adcCenterMax);
+	eeprom_write_word(EEPROM_MIN_ADC, adcMin);
 	eeprom_write_word(EEPROM_MAX_ADC, adcMax);
 }
 
@@ -147,7 +155,8 @@ void initADC(void) {
 	adcArrMax = 0x0000;
 
 	ADMUX = (0 << REFS1) | (0 << REFS0) | // AREF, internal VREF turned off
-	        (1 << ADLAR) | // ADC Left Adjust Result ADCH(8) ADCL(2...)
+	        // (1 << ADLAR) | // ADC Left Adjust Result ADCH(8) ADCL(2...)
+	        (0 << ADLAR) | // ADC RIGHT Adjust Result ADCH(...2) ADCL(8)
 	        (0 << MUX3) | (0 << MUX2) | (0 << MUX1) |
 	        (0 << MUX0) | // ADC0 select
 	        0x00;
@@ -157,9 +166,9 @@ void initADC(void) {
 	         (1 << ADIF) |  // Reset ADC Interrupt Flag
 	         (1 << ADIE) |  // Enable ADC interrupt
 #if (F_CPU == 8000000)
-			(0 << ADPS2) | (0 >> ADPS1) | (1 << ADPS0) | //  ADC Prescale 2 // 8MHz ~ 307692HZ ~ 307KHz
+			(0 << ADPS2) | (0 << ADPS1) | (1 << ADPS0) | //  ADC Prescale 2 // 8MHz ~ 307692HZ ~ 307KHz
 #elif (F_CPU == 16000000)
-			 (1 << ADPS2) | (1 >> ADPS1) | (0 << ADPS0) | //  ADC Prescale 4 // 16MHz ~ 307692HZ ~ 307KHz
+			 (1 << ADPS2) | (1 << ADPS1) | (0 << ADPS0) | //  ADC Prescale 4 // 16MHz ~ 307692HZ ~ 307KHz
 #endif
 	         (1 << ADATE) | // ADC Auto Trigger Enable
 	         0x00;
@@ -212,17 +221,21 @@ void initPWM(void) {
 }
 
 void initLED(void) {
-	LED_DDR |= (1<<LED_BLUE_PIN_NUM);
-	LED_PORT |= (1<<LED_BLUE_PIN_NUM);
+	LED_DDR |= (1<<LED_BLUE_PIN_NUM)|(1<<LED_GREEN_PIN_NUM)|(1<<LED_RED_PIN_NUM);
 
 	LED_BLUE_ON();
 	LED_GREEN_ON();
+	LED_RED_ON();
 }
 
 ISR(ADC_vect) {
-	uint16_t adcVal;
-	adcVal = 0x0000 | ((ADCL & 0b11000000) >> 7); // we need only one high bit (ADLAR=1)
-	adcVal |= (ADCH << 1); // after read ADCH free ADC converter and starts new conversion automaticly
+	// NEED ONLY 9 BITS FROM ADC VALUE! Don't use last bit
+	// ADC Data register not update until ADCH is read
+	// uint16_t adcVal = ((ADCH & 0x01) << 8);
+	// adcVal = ADCL;
+	uint16_t adcVal = ADCW;
+	adcVal >>= 1;
+
 	adcArr += adcVal;
 	if(adcArrMin > adcVal) {
 		adcArrMin = adcVal;
@@ -232,13 +245,13 @@ ISR(ADC_vect) {
 	}
 	adcIndex++;
 	if(adcIndex > 9) {
-		adcArr -= (adcArrMin - adcArrMax);
+		adcArr -= (adcArrMin + adcArrMax);
 		// adcCur = adcArr / 8;
 		adcCur = (adcArr >> 3); // division by 8
-		adcArr = 0;
-		adcIndex = 0;
 		adcArrMin = 0x01FF;
 		adcArrMax = 0x0000;
+		adcArr = 0;
+		adcIndex = 0;
 	}
 }
 
@@ -288,15 +301,16 @@ void calcPwmPerSteps(void) {
 }
 
 #if USE_SERIAL
-const char str_TriumphShifter[] PROGMEM = "Triumph Shifter\r\n";
-const char str_MIN[] PROGMEM = "MIN:";
-const char str_CENTER[] PROGMEM = "CENTER:";
-const char str_MAX[] PROGMEM = "MAX:";
-const char str_NL[] PROGMEM = "\r\n";
-const char str_ADC[] PROGMEM = "ADC:";
-const char str_StartCalibrating[] PROGMEM = "Calibrating center...\r\n";
-const char str_CalibratingMinMax[] PROGMEM = "Calibrating MIN & MAX...\r\n";
-const char str_SaveToEEPROM[] PROGMEM = "Saving to EEPROM!\r\n";
+const char str_TriumphShifter[] PROGMEM = "Triumph Shifter\r\n\0";
+const char str_MIN[] PROGMEM = "MIN:\0";
+const char str_CENTER[] PROGMEM = "CENTER:\0";
+const char str_MAX[] PROGMEM = "MAX:\0";
+const char str_NL[] PROGMEM = "\r\n\0";
+const char str_ADC[] PROGMEM = "ADC:\0";
+const char str_PWM[] PROGMEM = "PWM:\0";
+const char str_StartCalibrating[] PROGMEM = "Calibrating center...\r\n\0";
+const char str_CalibratingMinMax[] PROGMEM = "Calibrating MIN & MAX...\r\n\0";
+const char str_SaveToEEPROM[] PROGMEM = "Saving to EEPROM!\r\n\0";
 #endif
 
 void setup(void) {
@@ -317,23 +331,26 @@ void setup(void) {
 
 	initADC();
 
+	initPWM();
+
 	if(checkCalIsDown()) {
 		calStep = 1; // enter to calibrating
 	}
 
 	calcPwmPerSteps();
 
-#if USE_SERIAL
-	uartInit();
-#endif
-
 	LED_BLUE_OFF();
+	LED_RED_OFF();
 
 	sei();
 
-	ADCSRA |= (1<<ADSC)|(1<<ADIF); // Reset interrupt flag and start new conversion
+	ADCSRA |= (1<<ADIF); // Reset interrupt flag
+	ADCSRA |= (1<<ADSC); // Start ADC conversion
 
 #if USE_SERIAL
+
+	uartInit();
+
 	uartSend_P(str_TriumphShifter);
 
 	uartSend_P(str_MIN);
@@ -360,28 +377,22 @@ void setup(void) {
 #endif
 }
 
+uint16_t calAdcMin = 0x01FF;
+uint16_t calAdcMax = 0x0000;
 
 void doCalibrate(void) {
-	static uint16_t calAdcMin = 0x01FF;
-	static uint16_t calAdcMax = 0x0000;
 
-	// calStep = 1
-	if(adcPrev != adcCur) {
-		if(calAdcMin > adcCur) {
-			calAdcMin = adcCur;
-		}
-		if(adcCur > calAdcMax) {
-			calAdcMax = adcCur;
-		}
+	if(calAdcMin > adcCur) {
+		calAdcMin = adcCur;
+	} else if(adcCur > calAdcMax) {
+		calAdcMax = adcCur;
 	}
 
 	if(checkCalIsDown()) {
 		if(1 == calStep) {
 			adcCenterMin = calAdcMin;
 			adcCenterMax = calAdcMax;
-			reCheckAdcValues();
-			calAdcMin = 0x01FF;
-			calAdcMax = 0x0000;
+			reCheckCenterAdcValues();
 #if USE_SERIAL
 			uartSend_P(str_CENTER);
 			uartSendUint16_t(adcCenterMin);
@@ -390,6 +401,8 @@ void doCalibrate(void) {
 			uartSend_P(str_NL);
 			uartSend_P(str_CalibratingMinMax);
 #endif
+			calAdcMin = adcCenterMin - 1;
+			calAdcMax = adcCenterMax + 1;
 		} else {
 			adcMin = calAdcMin;
 			adcMax = calAdcMax;
@@ -410,7 +423,10 @@ void doCalibrate(void) {
 	uartSend_P(str_SaveToEEPROM);
 #endif
 
+			calAdcMin = 0x01FF;
+			calAdcMax = 0x0000;
 			LED_BLUE_OFF();
+			return;
 		}
 		calStep++;
 	}
@@ -423,6 +439,14 @@ void loop(void) {
 	if(0 != calStep) {
 		if(secondsPrev != seconds) {
 			LED_BLUE_TOGGLE();
+#if USE_SERIAL
+			uartSend_P(str_MIN);
+			uartSendUint16_t(calAdcMin);
+			uartSendChar(' ');
+			uartSend_P(str_MAX);
+			uartSendUint16_t(calAdcMax);
+			uartSend_P(str_NL);
+#endif
 		}
 		doCalibrate();
 	} else {
@@ -431,7 +455,7 @@ void loop(void) {
 				if(adcCur > adcMax) {
 					pwmVal = PWM_MAX;
 				} else {
-					pwmVal = PWM_CENTER + (uint16_t)(pwmCenterToMaxPerStep * (float)(adcMax - adcCur));
+					pwmVal = PWM_CENTER + (uint16_t)(pwmCenterToMaxPerStep * (float)(adcCur - adcCenterMax));
 				}
 			} else if (adcCenterMin > adcCur) {
 				if(adcMin > adcCur) {
@@ -454,6 +478,9 @@ void loop(void) {
 #if USE_SERIAL		
 		uartSend_P(str_ADC);
 		uartSendUint16_t(adcCur);
+		uartSendChar(' ');
+		uartSend_P(str_PWM);
+		uartSendUint16_t(pwmVal);
 		uartSend_P(str_NL);
 #endif
 		secondsPrev = seconds;

@@ -6,7 +6,7 @@
 #include "serial.h"
 
 #ifndef TX_BUFFER_SIZE
-#define TX_BUFFER_SIZE 64 /**< TX Buffer Size in Bytes (Power of 2) */
+#define TX_BUFFER_SIZE 128 /**< TX Buffer Size in Bytes (Power of 2) */
 #endif // TX_BUFFER_SIZE
 
 volatile char tx_buffer[TX_BUFFER_SIZE];
@@ -14,44 +14,59 @@ volatile uint8_t tx_head = 0; // Индекс для добавления дан
 volatile uint8_t tx_tail = 0; // Индекс для отправки данных
 volatile uint8_t tx_running = 0; // Статус передачи
 
-ISR(USART_TX_vect) {
+ISR(USART_UDRE_vect) {
+    if(!tx_running) {
+        return;
+    }
     // Проверяем, есть ли ещё данные в буфере для отправки
     if (tx_head != tx_tail) {
         // Загружаем следующий символ в регистр данных для передачи
-        UDR0 = tx_buffer[tx_tail];
+        uint8_t c = tx_buffer[tx_tail];
         tx_tail = (tx_tail + 1) % TX_BUFFER_SIZE;
+        UDR0 = c;
+        
     } else {
         // Буфер опустел, останавливаем передачу
         tx_running = 0;
-
-        UCSR0B &= ~(1 << UDRIE0);
+        PORTD &= ~(1<<6);
     }
 }
 
 void uartInit(void) {
-    uint16_t ubrr_value = (F_CPU / (16UL * 115200UL)) - 1;
-
-    // Установка скоростных параметров
-    UBRR0H = (ubrr_value >> 8) & 0xFF;
-    UBRR0L = ubrr_value & 0xFF;
+    // Установка скорости 57600 (даташит)
+#if (F_CPU == 8000000)
+    UBRR0H = 0;
+    UBRR0L = 16;
+    UCSR0A = (1 << U2X0); // Включить удвоенную скорость
+    // Ошибка 2.1%
+#elif (F_CPU == 16000000)
+    UBRR0H = 0;
+    UBRR0L = 34;
+    UCSR0A = (1 << U2X0); // Отключить удвоенную скорость
+    // Ошибка -0.8%
+#endif
 
     // Включение передатчика
     UCSR0B = (1 << TXEN0);
     
     // Формат кадра: 8 бит данных, 1 стоп-бит, без паритета
     UCSR0C = (1 << UCSZ01) | (1 << UCSZ00);
+
+    tx_running = 0;
+    PORTD &= ~(1<<6);
+    tx_head = tx_tail = 0;
+    UCSR0B |= (1 << UDRIE0);
 }
 
 // Возвращает 1 при успешном добавлении, 0 при ошибке (буфер полон)
 void uartSendChar(char data) {
     uint8_t next_head = (tx_head + 1) % TX_BUFFER_SIZE;
 
-    // // Проверка, есть ли место в буфере
-    // if (next_head == tx_tail) {
-    //     // Буфер полон
-    //     return 0;
-    // }
-    // Вырезано, пусть будет перезапись
+    // Проверка, есть ли место в буфере
+    if (next_head == tx_tail) {
+        // Буфер полон
+        return;
+    }
 
     tx_buffer[tx_head] = data;
     tx_head = next_head;
@@ -59,24 +74,25 @@ void uartSendChar(char data) {
     // Если передача не запущена, запускаем её
     if (!tx_running) {
         tx_running = 1;
+        PORTD |= (1<<6);
+
         // Загружаем первый символ в регистр данных
-        UDR0 = tx_buffer[tx_tail];
+        next_head = tx_buffer[tx_tail];
         tx_tail = (tx_tail + 1) % TX_BUFFER_SIZE;
-        // Включаем прерывание по завершению передачи
-        UCSR0B |= (1 << UDRIE0);
+        UDR0 = next_head;
     }
 }
 
 void uartSend(char *str) {
     char c;
-    while(0 != (c = *str++)) {
+    while('\0' != (c = *str++)) {
         uartSendChar(c);
     }
 }
 
 void uartSend_P(const char *str) {
     char c;
-    while(0 != (c = pgm_read_byte(str++))) {
+    while('\0' != (c = pgm_read_byte(str++))) {
         uartSendChar(c);
     }
 }
